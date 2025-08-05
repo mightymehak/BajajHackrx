@@ -61,6 +61,11 @@ jobs:
         with:
           name: python-app
       
+    - name: Verify Secrets (Temporary)
+        run: |
+          echo "Client ID secret is being read."
+          echo "Tenant ID secret is being read."
+
       - name: Login to Azure
         uses: azure/login@v2
         with:
