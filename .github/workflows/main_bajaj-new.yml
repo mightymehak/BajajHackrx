@@ -2,7 +2,7 @@
 # More GitHub Actions for Azure: https://github.com/Azure/actions
 # More info on Python, GitHub Actions, and Azure App Service: https://aka.ms/python-webapps-actions
 
-name: Build and deploy Python app to Azure Web App - bajaj-new
+name: Build and deploy Python app to Azure Web App - bajaj-hackrx-app
 
 on:
   push:
@@ -13,34 +13,40 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read #This is required for actions/checkout
-
     steps:
       - uses: actions/checkout@v4
 
       - name: Set up Python version
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: '3.11' # Specify the Python version you want to use
 
-      - name: Create and start virtual environment
+      - name: Install dependencies and prepare app
         run: |
           python -m venv venv
           source venv/bin/activate
-      
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-        
-      # Optional: Add step to run tests here (PyTest, Django test suites, etc.)
+          
+          # 1. Upgrade pip and other build tools to avoid issues
+          pip install --upgrade pip setuptools wheel
+          
+          # 2. Purge the pip cache to ensure a completely fresh install
+          pip cache purge
+          
+          # 3. Force a complete re-install of all dependencies, without using the cache
+          pip install -r requirements.txt --upgrade --force-reinstall --no-cache-dir
+          
+          # 4. Download your spaCy model
+          python -m spacy download en_core_web_sm
 
       - name: Upload artifact for deployment jobs
         uses: actions/upload-artifact@v4
         with:
           name: python-app
           path: |
-            .
+            **/*
             !venv/
+            !venv/**
+            !__pycache__/
 
   deploy:
     runs-on: ubuntu-latest
@@ -58,14 +64,13 @@ jobs:
       - name: Login to Azure
         uses: azure/login@v2
         with:
-          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_E1730EBBB695451C958A974B01AC9F87 }}
-          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_1C8E4C4C5EF7406E85ACB9CBAEDE975C }}
-          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_13B2BB14F33E4128853628D60F6F0B65 }}
+          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_44C1BB67025D4760A6D1C19747E1978B }}
+          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_875133C763644A36883ECCDE97830582 }}
+          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_DDFE4FF9660F425AA6E99B20C93D5054 }}
 
       - name: 'Deploy to Azure Web App'
         uses: azure/webapps-deploy@v3
         id: deploy-to-webapp
         with:
-          app-name: 'bajaj-new'
+          app-name: 'bajaj-hackrx-app'
           slot-name: 'Production'
-          
