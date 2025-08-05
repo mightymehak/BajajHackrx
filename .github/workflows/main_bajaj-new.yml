@@ -61,7 +61,7 @@ jobs:
         with:
           name: python-app
       
-    - name: Verify Secrets (Temporary)
+      - name: Verify Secrets (Temporary)
         run: |
           echo "Client ID secret is being read."
           echo "Tenant ID secret is being read."
