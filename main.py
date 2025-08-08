@@ -28,6 +28,9 @@ from fastapi.responses import FileResponse
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel, HttpUrl
 
+# ---- New Caching Import ----
+from cachetools import LRUCache
+
 
 # ---- Configurable paths ---- #
 EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
@@ -46,7 +49,8 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 app = FastAPI(
     title="Bajaj Hackrx API",
     description="LLM powered semantic search and question answering API for the Bajaj Hackrx.",
-    version="4.0"
+    version="4.0",
+    docs_url="/api/v1/hackrx/run"
 )
 
 @app.on_event("startup")
@@ -80,6 +84,10 @@ model = None
 faiss_index = None
 chunk_metadata = None
 
+# ---- New Caching Object ----
+processed_doc_cache = LRUCache(maxsize=100)
+
+
 def load_artifacts():
     global model, faiss_index, chunk_metadata
     print("Loading embedding model and FAISS index for search/API...")
@@ -97,7 +105,7 @@ def load_artifacts():
 
 # ---- New Authentication Endpoint ----
 HACKRX_API_KEY = os.getenv("HACKRX_API_KEY")
-@app.post("/token", tags=["Authentication"])
+@app.post("/api/v1/hackrx/token", tags=["Authentication"])
 async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()) -> TokenResponse:
     if form_data.password != HACKRX_API_KEY:
         raise HTTPException(
@@ -191,39 +199,58 @@ async def hackrx_run_endpoint(req: HackathonRequest, token: str = Depends(oauth2
     if model is None:
         raise HTTPException(status_code=503, detail="Embedding model not loaded.")
     
-    temp_faiss_index = None
-    chunks = []
+    document_url = str(req.documents)
+    
+    # ---- START CACHING LOGIC ----
+    # Check if the processed document is already in our cache
+    cached_data = processed_doc_cache.get(document_url)
+    
+    if cached_data:
+        print(f"Using cached data for document: {document_url}")
+        temp_faiss_index = cached_data['faiss_index']
+        chunks = cached_data['chunks']
+    else:
+        # If not in cache, proceed with the full processing pipeline
+        print(f"Processing document from scratch: {document_url}")
+        
+        temp_faiss_index = None
+        chunks = []
 
-    try:
-        print(f"Downloading document from: {req.documents}")
-        # The requests.get() call is blocking, but it's a small part of the total time.
-        response = await asyncio.to_thread(requests.get, str(req.documents))
-        response.raise_for_status()
-        
-        print("Processing document and building temporary index...")
-        document_bytes = response.content
-        parsed_text = parse_document(document_bytes)
-        
-        if not parsed_text:
-            raise Exception("Parsing failed for the provided document.")
+        try:
+            print(f"Downloading document from: {req.documents}")
+            response = await asyncio.to_thread(requests.get, document_url)
+            response.raise_for_status()
             
-        chunks = chunk_document(parsed_text, doc_name=str(req.documents), overlap=1)
-        if not chunks:
-            raise Exception("Chunking failed for the provided document.")
+            print("Processing document and building temporary index...")
+            document_bytes = response.content
+            parsed_text = parse_document(document_bytes)
+            
+            if not parsed_text:
+                raise Exception("Parsing failed for the provided document.")
+                
+            chunks = chunk_document(parsed_text, doc_name=document_url, overlap=1)
+            if not chunks:
+                raise Exception("Chunking failed for the provided document.")
 
-        new_chunk_texts = [chunk['chunk_text'] for chunk in chunks]
-        # This part is CPU intensive, so it's best to run it sequentially.
-        new_embeddings = model.encode(new_chunk_texts, normalize_embeddings=True).astype('float32')
-        
-        temp_faiss_index = faiss.IndexFlatL2(model.get_sentence_embedding_dimension())
-        temp_faiss_index.add(new_embeddings)
+            new_chunk_texts = [chunk['chunk_text'] for chunk in chunks]
+            new_embeddings = model.encode(new_chunk_texts, normalize_embeddings=True).astype('float32')
+            
+            temp_faiss_index = faiss.IndexFlatL2(model.get_sentence_embedding_dimension())
+            temp_faiss_index.add(new_embeddings)
 
-    except Exception as e:
-        print(f"Error during document processing for /hackrx/run: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to process the document from URL. Error: {e}"
-        )
+            # Store the processed data in the cache for future requests
+            processed_doc_cache[document_url] = {
+                'faiss_index': temp_faiss_index,
+                'chunks': chunks
+            }
+            
+        except Exception as e:
+            print(f"Error during document processing for /hackrx/run: {e}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to process the document from URL. Error: {e}"
+            )
+    # ---- END CACHING LOGIC ----
     
     # --- The concurrent answer generation part ---
     tasks = [
@@ -232,10 +259,8 @@ async def hackrx_run_endpoint(req: HackathonRequest, token: str = Depends(oauth2
     ]
     
     try:
-        # Run all tasks concurrently
         answers_list = await asyncio.gather(*tasks)
     except Exception as e:
-        # This block catches errors from any of the concurrent tasks
         print(f"An error occurred during concurrent answer generation: {e}")
         raise HTTPException(status_code=500, detail="Failed to generate one or more answers.")
     

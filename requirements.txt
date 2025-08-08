@@ -15,5 +15,6 @@ python-multipart
 asyncio 
 python-magic
 python-dotenv
-
+cachetools
+gunicorn
 
